@@ -1,0 +1,23 @@
+{
+  "bondPolicy": { "percentOfInvoice": 0.01, "baseHbar": 300, "minHbar": 250, "maxHbar": 5000 },
+  "slashingPolicy": {
+    "fraud": 1.0,
+    "noBuyerAck": 0.5,
+    "latePaymentDays": [
+      { "gt": 0, "lte": 30, "slash": 0.1 },
+      { "gt": 30, "lte": 60, "slash": 0.3 },
+      { "gt": 60, "slash": 0.6 }
+    ]
+  },
+  "advanceRatePolicy": {
+    "default": 0.8,
+    "byEvidence": { "hasPO": 0.05, "hasBOLorGR": 0.05, "buyerAck": 0.05 },
+    "capsByRisk": { "green": 0.9, "yellow": 0.85, "red": 0.7 }
+  },
+  "feesPolicy": {
+    "htsCustomFixedFeeHbar": 0.25,
+    "platformPct": 0.0075,
+    "feeSplit": { "treasury": 0.6, "insurancePool": 0.3, "community": 0.1 }
+  },
+  "attesterPolicy": { "minBondHbar": 1000, "slashOnBadSign": 0.5, "minAttestersForHighRisk": 2 }
+}

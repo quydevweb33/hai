@@ -1,0 +1,229 @@
+// app/api/invoices/[id]/invest/route.ts
+import { type NextRequest, NextResponse } from "next/server"
+import { investToInvoice } from "@/lib/mock-hedera"
+import { publishHcsEvent } from "@/lib/hedera-live"
+
+export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+  const body = await req.json()
+  const rawAmount = body.amountUnits ?? body.amount ?? 0
+  const rawInvestor = body.investorAccountId ?? body.investor ?? "0.0.89000"
+  const rawMemo = body.txMemo ?? `${params.id}|INVEST`
+
+  const amount = Number(rawAmount) // FT units (cents if decimals=2)
+  const investor = String(rawInvestor)
+  const txMemo = String(rawMemo)
+
+  const result = investToInvoice(params.id, amount, investor, txMemo)
+  try { await publishHcsEvent("INVESTED", { invoiceId: params.id, investor, amountUnits: amount }) } catch {}
+  return NextResponse.json(result)
+}
+
+// app/api/attesters/[id]/sign/route.ts
+import { type NextRequest, NextResponse } from "next/server"
+import { attesterSign } from "@/lib/mock-hedera"
+import { publishHcsEvent } from "@/lib/hedera-live"
+
+export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+  const body = await req.json()
+  const invoiceId = String(body.invoiceId)
+  const type = String(body.milestone ?? body.type ?? "BUYER_ACK")
+  const extra: Record<string, any> = {}
+  if (body.notes) extra.notes = String(body.notes)
+  if (body.timestamp) extra.timestamp = String(body.timestamp)
+  const result = attesterSign(params.id, invoiceId, type, extra)
+  try {
+    await publishHcsEvent(type, { invoiceId, attester: params.id, ...extra })
+  } catch {}
+  return NextResponse.json(result)
+}
+
+// lib/mock-hedera.ts
+const POLICY = {
+  attesterPolicy: {
+    minBondHbar: 100,
+  },
+}
+
+const state = {
+  invoices: [],
+  attesterBonds: new Map(),
+}
+
+function publish(event: Record<string, any>) {
+  console.log(event)
+}
+
+export function attesterSign(attester: string, invoiceId: string, type: string, extra?: Record<string, any>) {
+  const inv = state.invoices.find((i) => i.id === invoiceId)
+  if (!inv) return { ok: false, error: "Invoice not found" }
+
+  // Ensure bond exists for attester policy (simplified)
+  const minBond = POLICY.attesterPolicy.minBondHbar
+  if (!state.attesterBonds.has(attester)) {
+    state.attesterBonds.set(attester, minBond) // lock minimal for demo
+  }
+
+  // Publish with optional metadata (notes/timestamp)
+  publish({ type, invoiceId, attester, ...(extra ?? {}) })
+  if (type === "BUYER_ACK") {
+    inv.status = "ACKED"
+  }
+  return { ok: true, invoice: inv }
+}
+
+// app/api/invoices/route.ts
+import { type NextRequest, NextResponse } from "next/server"
+import { createInvoice, listInvoices } from "@/lib/mock-hedera"
+import { publishHcsEvent } from "@/lib/hedera-live"
+
+export async function GET(req: NextRequest) {
+  const invoices = listInvoices()
+  return NextResponse.json({ invoices })
+}
+
+export async function POST(req: NextRequest) {
+  const formData = await req.formData()
+  const buyer = String(formData.get("buyer") || "Unknown Buyer")
+  const amountUSD = Number(formData.get("amountUSD") || 0)
+  const maturity = String(formData.get("maturity") || new Date().toISOString())
+  const risk = String(formData.get("risk") || "yellow") as "green" | "yellow" | "red"
+  const fileNamesStr = String(formData.get("fileNames") || "[]")
+  let fileNames: string[] = []
+  try {
+    fileNames = JSON.parse(fileNamesStr)
+  } catch {
+    fileNames = []
+  }
+  const invoice = createInvoice({ buyer, amountUSD, maturity, risk, fileNames })
+  try {
+    await publishHcsEvent("LISTED", { invoiceId: invoice.id, risk, topicId: invoice.topicId })
+  } catch {}
+  return NextResponse.json({ invoice })
+}
+
+// app/api/bond/post/route.ts
+import { type NextRequest, NextResponse } from "next/server"
+import { postBond } from "@/lib/mock-hedera"
+import { publishHcsEvent } from "@/lib/hedera-live"
+
+export async function POST(req: NextRequest) {
+  const body = await req.json()
+  const invoiceId = String(body.invoiceId)
+  const amountHbar = Number(body.amountHbar)
+  const result = postBond(invoiceId, amountHbar)
+  try { await publishHcsEvent("BOND_POSTED", { invoiceId, bondHbar: amountHbar }) } catch {}
+  return NextResponse.json(result)
+}
+
+// app/api/invoices/[id]/payout/route.ts
+import { type NextRequest, NextResponse } from "next/server"
+import { payoutInvoice } from "@/lib/mock-hedera"
+import { publishHcsEvent } from "@/lib/hedera-live"
+
+export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+  const body = await req.json()
+  const buyerPaymentTxn = String(body.buyerPaymentTxn || "0x")
+  const amountPaid = Number(body.amountPaid || 0)
+  const result = payoutInvoice(params.id, amountPaid, buyerPaymentTxn)
+  try { await publishHcsEvent("PAYOUT", { invoiceId: params.id, amountPaid, buyerPaymentTxn }) } catch {}
+  return NextResponse.json(result)
+}
+
+// components/invoice-card.tsx
+// Assuming necessary imports are already present (React, useState, track, etc.)
+// This snippet focuses on the CardFooter section update.
+
+// Assuming inv is defined and available in the scope.
+// Assuming onActionDone is defined and available in the scope.
+// Assuming track is imported from "@/lib/analytics"
+// Assuming useState is imported from "react"
+
+// Within the component, before the return statement:
+// const [ackLoading, setAckLoading] = useState(false)
+// const buyerAck = async () => {
+//   setAckLoading(true)
+//   await fetch(`/api/attesters/0.0.77777/sign`, {
+//     method: "POST",
+//     headers: { "content-type": "application/json" },
+//     body: JSON.stringify({ invoiceId: inv.id, type: "BUYER_ACK" }),
+//   })
+//   await track("buyer_ack", { invoiceId: inv.id })
+//   setAckLoading(false)
+//   await onActionDone()
+// }
+
+// Inside the return statement, within the CardFooter:
+// <CardFooter className="flex flex-col gap-2">
+//   <div className="flex w-full flex-col gap-2 sm:flex-row">
+//     <div className="flex w-full items-center gap-2">
+//       <Input
+//         type="number"
+//         min={10}
+//         step={5}
+//         value={investAmount}
+//         onChange={(e) => setInvestAmount(Number(e.target.value))}
+//       />
+//       <Button onClick={invest} className="bg-emerald-600 hover:bg-emerald-700">
+//         <Coins className="h-4 w-4 mr-2" /> Invest ${investAmount}
+//       </Button>
+//     </div>
+//     <Button variant="outline" onClick={buyerAck} disabled={ackLoading} className="w-full sm:w-auto bg-transparent">
+//       {ackLoading ? "Acknowledging..." : "Buyer ACK"}
+//     </Button>
+//   </div>
+//   <div className="text-xs text-muted-foreground">
+//     <DollarSign className="inline h-3 w-3 mr-1" />
+//     Custom fee HTS in HBAR dipotong otomatis per transfer (simulasi kebijakan).
+//   </div>
+// </CardFooter>
+
+// app/api/openapi/route.ts
+// Assuming the base structure of the openapi definition is already present.
+// This snippet focuses on adding the /api/files path and schemas.
+
+// Within the paths section:
+// "/api/files": {
+//   get: {
+//     summary: "List stored encrypted file names (demo)",
+//     responses: {
+//       200: {
+//         description: "OK",
+//         content: { "application/json": { schema: { $ref: "#/components/schemas/FilesList" } } }
+//       }
+//     }
+//   },
+//   post: {
+//     summary: "Upload encrypted file (ciphertext)",
+//     requestBody: {
+//       required: true,
+//       content: { "application/json": { schema: { $ref: "#/components/schemas/EncryptedFileUpload" } } }
+//     },
+//     responses: {
+//       200: {
+//         description: "Stored",
+//         content: {
+//           "application/json": {
+//             schema: { type: "object", properties: { ok: { type: "boolean" }, fsName: { type: "string" } } }
+//           }
+//         }
+//       }
+//     }
+//   }
+// }
+
+// Within the components.schemas section:
+// EncryptedFileUpload: {
+//   type: "object",
+//   properties: {
+//     name: { type: "string" },
+//     mime: { type: "string" },
+//     size: { type: "number" },
+//     iv: { type: "string", description: "base64 IV (12 bytes for AES-GCM)" },
+//     data: { type: "string", description: "base64 ciphertext" }
+//   },
+//   required: ["name", "iv", "data"]
+// },
+// FilesList: {
+//   type: "object",
+//   properties: { ok: { type: "boolean" }, files: { type: "array", items: { type: "string" } } }
+// }
